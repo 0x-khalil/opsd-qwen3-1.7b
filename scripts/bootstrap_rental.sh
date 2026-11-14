@@ -221,7 +221,15 @@ else
     python scripts/upload_to_hf.py --repo_id "$HF_REPO_ID" --repo_type "$HF_REPO_TYPE" \
         --token "$HF_TOKEN" --private "$HF_PRIVATE" \
         --paths "$PKG_DIR" $([ "$UPLOAD_MERGED" = "1" ] && echo "$MERGED_DIR") 2>&1 | tee -a "$LOG"
-    log "published: https://huggingface.co/$HF_REPO_ID"
+    if [ ${PIPESTATUS[0]} = "0" ]; then
+        log "published: https://huggingface.co/$HF_REPO_ID"
+    else
+        log "UPLOAD FAILED - the artifacts are still on the pod, just retry with:"
+        log "  source $VENV/bin/activate"
+        log "  export HF_TOKEN=\$(tr -d ' \\\\t\\\\r\\\\n' < $HF_TOKEN_FILE)"
+        log "  python scripts/upload_to_hf.py --repo_id $HF_REPO_ID --repo_type $HF_REPO_TYPE \\"
+        log "      --token \"\$HF_TOKEN\" --private $HF_PRIVATE --paths $PKG_DIR $([ "$UPLOAD_MERGED" = "1" ] && echo "$MERGED_DIR")"
+    fi
 fi
 
 # --------------------------------------------------------------- 6.5 eval ---

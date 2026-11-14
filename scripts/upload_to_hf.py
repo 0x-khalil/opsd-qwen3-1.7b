@@ -34,10 +34,17 @@ def main():
     api = HfApi(token=args.token)
     private = args.private == "1"
 
-    log = api.create_repo(
-        repo_id=args.repo_id, repo_type=args.repo_type, exist_ok=True, private=private
-    )
-    print(f"[hf] repo ready: {log.repo_url}")
+    try:
+        repo = api.create_repo(
+            repo_id=args.repo_id, repo_type=args.repo_type, exist_ok=True, private=private
+        )
+        # create_repo returns a RepoUrl (it has .repo_id); older/other versions
+        # return an object with .repo_url
+        repo_id = getattr(repo, "repo_id", None) or str(repo)
+    except Exception as e:
+        print(f"[hf] create_repo failed ({e}); assuming the repo already exists")
+        repo_id = args.repo_id
+    print(f"[hf] repo ready: https://huggingface.co/{repo_id}")
 
     for p in args.paths:
         folder = Path(p).expanduser().resolve()
