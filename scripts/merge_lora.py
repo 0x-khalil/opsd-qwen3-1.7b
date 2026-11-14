@@ -1,16 +1,16 @@
-"""Merge an OPSD LoRA checkpoint into the base model so it can be evaluated anywhere.
+r"""Merge an OPSD LoRA checkpoint into the base model so it can be evaluated anywhere.
 
 The OPSD trainer only trains LoRA adapters, so a "checkpoint" is just an
 `adapter_model.safetensors` + `adapter_config.json` pair. Some evaluation
 harnesses (vLLM, OpenAI-compatible servers) want a plain HF model directory.
 
-Usage (Windows):
-    python scripts\merge_lora.py ^
-        --base_model C:\Users\Khali\projects\OPSD\models\Qwen3-1.7B ^
-        --adapter    C:\Users\Khali\projects\OPSD\runs\qwen31b_3070_gen1024_fixteacher\checkpoint-50 ^
-        --output     C:\Users\Khali\projects\OPSD\runs\qwen31b_3070_gen1024_fixteacher\merged-50
+Usage (Linux):
+    python scripts/merge_lora.py \
+        --base_model ~/models/Qwen3-1.7B \
+        --adapter    ~/runs/qwen31b_3070/checkpoint-50 \
+        --output     ~/runs/merged-50
 
-The same script works on Linux/macOS (drop the line continuations).
+Usage (Windows): same, with backslash paths.
 """
 
 import argparse

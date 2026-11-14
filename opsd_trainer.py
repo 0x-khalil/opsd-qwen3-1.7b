@@ -145,6 +145,7 @@ class OPSDTrainer(SFTTrainer):
         student_thinking: bool = False,
         teacher_thinking: bool = True,
         jsd_chunk_size: int = 64,
+        vllm_distributed_executor_backend: str = "external_launcher",
     ):
         self.model_name_or_path = model if isinstance(model, str) else model.config._name_or_path
         self.model_revision = getattr(args, "student_model_revision", None)
@@ -192,6 +193,7 @@ class OPSDTrainer(SFTTrainer):
         self.use_ema_teacher = use_ema_teacher
         self.ema_decay = ema_decay
         self.jsd_chunk_size = jsd_chunk_size
+        self.vllm_distributed_executor_backend = vllm_distributed_executor_backend
         self._ema_params = None  # lazily initialized on first optimizer step
 
         # Validate fixed_teacher option
@@ -346,7 +348,7 @@ class OPSDTrainer(SFTTrainer):
                     max_num_seqs=self.args.per_device_train_batch_size
                     * self.args.gradient_accumulation_steps,
                     max_model_len=args.max_length,
-                    distributed_executor_backend="external_launcher",
+                    distributed_executor_backend=self.vllm_distributed_executor_backend,
                     # Feed identical seed for tp groups to ensure sampling results are the same across workers
                     seed=self.accelerator.process_index // self.vllm_tensor_parallel_size,
                     enable_sleep_mode=self.vllm_enable_sleep_mode,

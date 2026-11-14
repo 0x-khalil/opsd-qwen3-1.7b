@@ -84,6 +84,14 @@ class CustomScriptArguments(ScriptArguments):
             "implementation. Set to 0 to use the (VRAM hungry) reference implementation."
         },
     )
+    vllm_distributed_executor_backend: str = field(
+        default="external_launcher",
+        metadata={
+            "help": "vLLM distributed executor backend. 'external_launcher' (upstream default) requires "
+            "torch.distributed to be initialised -> launch with torchrun/accelerate. Use 'mp' to run "
+            "vLLM in its own spawned worker process on a single GPU."
+        },
+    )
 
     use_ema_teacher: bool = field(
         default=False,
@@ -231,15 +239,44 @@ if __name__ == "__main__":
     else:
         model_dtype = torch.bfloat16
 
+    # Attention implementation: fall back to SDPA when the requested backend is not
+    # usable on this machine (e.g. flash-attn has no sm_120 / Blackwell consumer
+    # kernels, or is not installed at all). SDPA is numerically equivalent.
+    requested_attn = model_args.attn_implementation or "flash_attention_2"
+    if requested_attn == "flash_attention_2":
+        from transformers.utils import is_flash_attn_2_available
+
+        if not is_flash_attn_2_available():
+            print(
+                "[opsd] flash_attention_2 is not installed -> falling back to sdpa "
+                "(same maths, no kernel-image errors on unsupported GPUs)."
+            )
+            requested_attn = "sdpa"
+        else:
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    major, minor = torch.cuda.get_device_capability(0)
+                    if (major, minor) > (9, 0):
+                        # flash-attn 2.x only ships kernels up to sm_90
+                        print(
+                            f"[opsd] GPU capability sm_{major}{minor} has no flash-attn 2.x kernels "
+                            "-> falling back to sdpa."
+                        )
+                        requested_attn = "sdpa"
+            except Exception as e:  # pragma: no cover - defensive
+                print(f"[opsd] could not query GPU capability ({e}); keeping {requested_attn}")
+
     print(f"\n{'='*80}")
     print(f"Loading model with dtype: {model_dtype}")
-    print(f"Using attention implementation: {model_args.attn_implementation or 'flash_attention_2'}")
+    print(f"Using attention implementation: {requested_attn}")
     print(f"{'='*80}\n")
 
     model_kwargs = dict(
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
-        attn_implementation=model_args.attn_implementation or "flash_attention_2",
+        attn_implementation=requested_attn,
         torch_dtype=model_dtype,
         use_cache=False if training_args.gradient_checkpointing else True,
     )
@@ -292,6 +329,7 @@ if __name__ == "__main__":
         student_thinking=script_args.student_thinking,
         teacher_thinking=script_args.teacher_thinking,
         jsd_chunk_size=script_args.jsd_chunk_size,
+        vllm_distributed_executor_backend=script_args.vllm_distributed_executor_backend,
     )
 
     if training_args.eval_strategy != "no":
