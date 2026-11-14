@@ -43,6 +43,8 @@ JSD_CHUNK_SIZE="${JSD_CHUNK_SIZE:-64}" # chunked loss = identical math, much les
 VLLM_BACKEND="${VLLM_BACKEND:-external_launcher}"
 USE_VLLM="${USE_VLLM:-1}"                # 0 -> plain HF generate (no vLLM needed)
 MASTER_PORT="${MASTER_PORT:-29511}"
+RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"   # e.g. .../checkpoint-20
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 export WANDB_MODE="${WANDB_MODE:-offline}"
 export TOKENIZERS_PARALLELISM=false
@@ -97,6 +99,17 @@ if [ "$USE_VLLM" = "1" ]; then
         --vllm_tensor_parallel_size 1
         --vllm_distributed_executor_backend "$VLLM_BACKEND"
     )
+fi
+
+if [ -n "$RESUME_FROM_CHECKPOINT" ]; then
+    echo "resuming from $RESUME_FROM_CHECKPOINT"
+    TRAIN_ARGS+=(--resume_from_checkpoint "$RESUME_FROM_CHECKPOINT")
+fi
+
+if [ -n "$EXTRA_ARGS" ]; then
+    # shellcheck disable=SC2206
+    EXTRA=( $EXTRA_ARGS )
+    TRAIN_ARGS+=("${EXTRA[@]}")
 fi
 
 if [ "$VLLM_BACKEND" = "external_launcher" ]; then

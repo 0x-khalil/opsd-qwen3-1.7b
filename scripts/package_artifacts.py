@@ -27,11 +27,18 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     copied = []
+    # only the adapter weights are needed for evaluation -> skip the optimizer /
+    # scheduler / RNG state (they are ~560 MB per checkpoint)
+    skip = {"optimizer.pt", "scheduler.pt", "rng_state.pth", "trainer_state.json",
+            "training_args.bin", "adapter_model.bin"}
     for ckpt in sorted(run_dir.glob("checkpoint-*")):
         target = out / ckpt.name
         if target.exists():
             shutil.rmtree(target)
-        shutil.copytree(ckpt, target)
+        target.mkdir(parents=True)
+        for f in ckpt.iterdir():
+            if f.is_file() and f.name not in skip:
+                shutil.copy2(f, target / f.name)
         copied.append(ckpt.name)
 
     final_files = ["adapter_config.json", "adapter_model.safetensors"]
