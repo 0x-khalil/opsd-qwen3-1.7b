@@ -31,8 +31,11 @@ cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------- settings ---
 MODEL_ID="${MODEL_ID:-Qwen/Qwen3-1.7B}"
-MODEL_DIR="${MODEL_DIR:-$HOME/models/Qwen3-1.7B}"
-OUTPUT_DIR="${OUTPUT_DIR:-$HOME/runs}"
+# WORK_DIR holds the venv + the model + the run (put it on the fast disk, e.g.
+# /workspace on Lium pods; /root there is an encrypted FUSE mount)
+WORK_DIR="${WORK_DIR:-$HOME}"
+MODEL_DIR="${MODEL_DIR:-$WORK_DIR/models/Qwen3-1.7B}"
+OUTPUT_DIR="${OUTPUT_DIR:-$WORK_DIR/runs}"
 RUN_CONFIG="${RUN_CONFIG:-qwen31b_5090_gen1024_fixteacher}"
 MAX_STEPS="${MAX_STEPS:-50}"
 MAX_COMPLETION="${MAX_COMPLETION:-1024}"
@@ -47,18 +50,12 @@ HF_REPO_TYPE="${HF_REPO_TYPE:-model}"
 HF_PRIVATE="${HF_PRIVATE:-1}"
 HF_TOKEN_FILE="${HF_TOKEN_FILE:-$HOME/.config/opsd/hf_token}"
 
-# the token can also live in a file (keeps it out of the shell history)
-if [ -z "$HF_TOKEN" ] && [ -f "$HF_TOKEN_FILE" ]; then
-    HF_TOKEN="$(tr -d ' \t\r\n' < "$HF_TOKEN_FILE")"
-    log "using the token from $HF_TOKEN_FILE"
-fi
-
 RUN_EVAL="${RUN_EVAL:-0}"
 UPLOAD_MERGED="${UPLOAD_MERGED:-1}"
 SMOKE="${SMOKE:-0}"
 KEEP_VENV="${KEEP_VENV:-0}"
 
-VENV="${VENV:-$HOME/.venv-opsd}"
+VENV="${VENV:-$WORK_DIR/venv}"
 LOG_DIR="${LOG_DIR:-$OUTPUT_DIR/logs}"
 RUN_DIR="$OUTPUT_DIR/$RUN_CONFIG"
 
@@ -75,6 +72,19 @@ mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/bootstrap.log"
 
 log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
+
+# the token can also live in a file (keeps it out of the shell history)
+if [ -z "$HF_TOKEN" ] && [ -f "$HF_TOKEN_FILE" ]; then
+    HF_TOKEN="$(tr -d ' \t\r\n' < "$HF_TOKEN_FILE")"
+    log "using the token from $HF_TOKEN_FILE"
+fi
+
+# some images (Lium, ...) pin torch via /etc/pip/constraints.txt -> we build our
+# own isolated venv, so the pin must not apply to it
+if [ -f /etc/pip/constraints.txt ]; then
+    export PIP_CONSTRAINT=/dev/null
+    log "bypassing /etc/pip/constraints.txt for our private venv"
+fi
 
 log "=============================================================="
 log " OPSD bootstrap | steps=$MAX_STEPS | hf_repo=$HF_REPO_ID"
