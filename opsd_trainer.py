@@ -144,6 +144,7 @@ class OPSDTrainer(SFTTrainer):
         ema_decay: float = 0.999,
         student_thinking: bool = False,
         teacher_thinking: bool = True,
+        jsd_chunk_size: int = 64,
     ):
         self.model_name_or_path = model if isinstance(model, str) else model.config._name_or_path
         self.model_revision = getattr(args, "student_model_revision", None)
@@ -190,6 +191,7 @@ class OPSDTrainer(SFTTrainer):
         self.jsd_token_clip = jsd_token_clip
         self.use_ema_teacher = use_ema_teacher
         self.ema_decay = ema_decay
+        self.jsd_chunk_size = jsd_chunk_size
         self._ema_params = None  # lazily initialized on first optimizer step
 
         # Validate fixed_teacher option
@@ -625,6 +627,35 @@ class OPSDTrainer(SFTTrainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
+        Compute the self-distillation loss.
+
+        Two implementations are available:
+
+        * ``_compute_loss_chunked`` (default, ``jsd_chunk_size > 0``): runs the backbone
+          once per role, then evaluates the token-level divergence on chunks of the
+          completion. The full ``(seq_len x vocab_size)`` logit tensors are never
+          materialised, which is what makes single 8 GB GPUs feasible. The maths is
+          identical to the reference implementation below.
+        * ``_compute_loss_reference`` (``jsd_chunk_size <= 0``): the original upstream
+          implementation, kept for numerical cross-checks.
+        """
+        if self.jsd_chunk_size and self.jsd_chunk_size > 0:
+            loss = self._compute_loss_chunked(model, inputs)
+        else:
+            loss = self._compute_loss_reference(model, inputs)
+
+        if return_outputs:
+            class MinimalOutput:
+                def __init__(self):
+                    self.loss = None
+
+            minimal_output = MinimalOutput()
+            minimal_output.loss = loss
+            return (loss, minimal_output)
+        return loss
+
+    def _compute_loss_reference(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """
         Compute the self-distillation loss with memory-efficient log-prob extraction.
 
         Memory optimization: Extract only needed log-probs immediately and free large tensors.
@@ -751,6 +782,172 @@ class OPSDTrainer(SFTTrainer):
             return (loss, minimal_output)
         else:
             return loss
+
+    # ------------------------------------------------------------------
+    # Low-VRAM (single 8 GB GPU) implementation
+    # ------------------------------------------------------------------
+    def _get_backbone_and_head(self, model):
+        """Return ``(backbone, lm_head)`` of the causal LM behind ``model``.
+
+        ``model`` may be wrapped by PEFT. ``PeftModel.get_base_model()`` returns the
+        underlying ``*ForCausalLM`` whose Linear layers have the LoRA adapters injected
+        in place, so calling the backbone directly still applies the adapters -- and
+        honours ``disable_adapter()`` for the (fixed) teacher pass.
+        """
+        m = self.accelerator.unwrap_model(model)
+        if hasattr(m, "get_base_model") and hasattr(m, "peft_config"):
+            m = m.get_base_model()
+        return m.model, m.lm_head
+
+    def _teacher_adapter_context(self, model):
+        """Context manager that selects the teacher weights (EMA / fixed / dynamic)."""
+        if self.use_ema_teacher:
+            return self._ema_teacher_context(model)
+        elif self.fixed_teacher and is_peft_model(model):
+            return self.accelerator.unwrap_model(model).disable_adapter()
+        return nullcontext()
+
+    @staticmethod
+    def _chunk_loss_fn(
+        head,
+        s_hidden,
+        t_hidden,
+        mask,
+        sampled_ids,
+        temperature,
+        beta,
+        top_k,
+        token_clip,
+        use_tinker,
+    ):
+        """Divergence contribution of one chunk of completion tokens.
+
+        Element-wise identical to ``generalized_jsd_loss`` (or to the Thinking Machines
+        policy-gradient variant), but only ever sees ``chunk_size x vocab_size`` logits.
+        """
+        if use_tinker:
+            s_logp = F.log_softmax(head(s_hidden).float() / temperature, dim=-1)
+            t_logp = F.log_softmax(head(t_hidden).float() / temperature, dim=-1)
+            s_sampled = torch.gather(s_logp, -1, sampled_ids.unsqueeze(-1)).squeeze(-1)
+            t_sampled = torch.gather(t_logp, -1, sampled_ids.unsqueeze(-1)).squeeze(-1)
+            # advantage must be detached: we want the policy-gradient estimator
+            advantage = (t_sampled - s_sampled).detach()
+            return -(advantage * s_sampled * mask).sum()
+
+        student_logits = head(s_hidden).float() / temperature
+        teacher_logits = head(t_hidden).float() / temperature
+
+        if top_k is not None and top_k > 0:
+            _, top_k_indices = torch.topk(teacher_logits, k=top_k, dim=-1)
+            student_logits = torch.gather(student_logits, dim=-1, index=top_k_indices)
+            teacher_logits = torch.gather(teacher_logits, dim=-1, index=top_k_indices)
+
+        student_log_probs = F.log_softmax(student_logits, dim=-1)
+        teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+
+        if beta == 0:
+            jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+        elif beta == 1:
+            jsd = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
+        else:
+            beta_t = torch.tensor(beta, dtype=student_log_probs.dtype, device=student_log_probs.device)
+            mixture_log_probs = torch.logsumexp(
+                torch.stack(
+                    [student_log_probs + torch.log1p(-beta_t), teacher_log_probs + torch.log(beta_t)]
+                ),
+                dim=0,
+            )
+            kl_teacher = F.kl_div(mixture_log_probs, teacher_log_probs, reduction="none", log_target=True)
+            kl_student = F.kl_div(mixture_log_probs, student_log_probs, reduction="none", log_target=True)
+            jsd = beta_t * kl_teacher + (1 - beta_t) * kl_student
+
+        if token_clip is not None:
+            jsd = jsd.clamp(max=token_clip)
+
+        return (jsd * mask.unsqueeze(-1).to(jsd.dtype)).sum()
+
+    def _compute_loss_chunked(self, model, inputs):
+        """Low-VRAM self-distillation loss.
+
+        The student/teacher backbones are run once (hidden states only, so the huge
+        ``seq_len x vocab`` logit tensors are never created), and the token level
+        divergence is then evaluated chunk-by-chunk with gradient checkpointing so
+        that at most one chunk of logits is alive at any time.
+        """
+        student_prompt_len = int(inputs["student_prompt_length"])
+        teacher_prompt_len = int(inputs["teacher_prompt_length"])
+
+        sampled_token_ids = inputs["student_input_ids"][:, student_prompt_len:]
+        shifted_labels = inputs["labels"][:, student_prompt_len:]
+
+        backbone, head = self._get_backbone_and_head(model)
+
+        import time
+
+        t0 = time.time()
+
+        # === STUDENT BACKBONE (gradients flow through the LoRA adapters) ===
+        student_hidden = backbone(
+            input_ids=inputs["student_input_ids"],
+            attention_mask=inputs["student_attention_mask"],
+            use_cache=False,
+        ).last_hidden_state
+        t1 = time.time()
+
+        # === TEACHER BACKBONE (no grad) ===
+        with torch.no_grad(), self._teacher_adapter_context(model):
+            teacher_hidden = backbone(
+                input_ids=inputs["teacher_input_ids"],
+                attention_mask=inputs["teacher_attention_mask"],
+                use_cache=False,
+            ).last_hidden_state
+        t2 = time.time()
+
+        num_valid = int((shifted_labels != -100).sum().item())
+        if num_valid == 0:
+            return student_hidden.sum() * 0.0
+
+        num_completion_tokens = shifted_labels.shape[1]
+        chunk_size = max(1, int(self.jsd_chunk_size))
+        student_offset = student_prompt_len - 1
+        teacher_offset = teacher_prompt_len - 1
+
+        total = None
+        for start in range(0, num_completion_tokens, chunk_size):
+            end = min(start + chunk_size, num_completion_tokens)
+            s_chunk = student_hidden[:, student_offset + start : student_offset + end]
+            t_chunk = teacher_hidden[:, teacher_offset + start : teacher_offset + end]
+            chunk_mask = shifted_labels[:, start:end] != -100
+            if not bool(chunk_mask.any()):
+                continue
+
+            part = torch.utils.checkpoint.checkpoint(
+                self._chunk_loss_fn,
+                head,
+                s_chunk,
+                t_chunk,
+                chunk_mask,
+                sampled_token_ids[:, start:end],
+                self.temperature,
+                self.beta,
+                self.top_k_loss,
+                self.jsd_token_clip,
+                self.use_thinking_machines_loss,
+                use_reentrant=False,
+            )
+            total = part if total is None else total + part
+            del s_chunk, t_chunk, part
+
+        empty_cache()
+        t3 = time.time()
+        if torch.cuda.is_available():
+            print(
+                f"[opsd] student fwd {t1 - t0:.1f}s | teacher fwd {t2 - t1:.1f}s | "
+                f"chunked loss {t3 - t2:.1f}s | peak VRAM: allocated "
+                f"{torch.cuda.max_memory_allocated() / 1e9:.2f} GB | reserved "
+                f"{torch.cuda.max_memory_reserved() / 1e9:.2f} GB"
+            )
+        return total / num_valid
 
     def generate_teacher_reasoning(
         self, model, teacher_reasoning_prompts, teacher_reasoning_attention_mask=None

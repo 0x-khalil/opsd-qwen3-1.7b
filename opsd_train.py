@@ -75,6 +75,15 @@ class CustomScriptArguments(ScriptArguments):
             "extremely high-loss stylistic tokens from dominating the training signal. Set to 0 for no clipping."
         },
     )
+    jsd_chunk_size: int = field(
+        default=64,
+        metadata={
+            "help": "Number of completion tokens processed at a time when computing the divergence. "
+            "The chunked implementation never materialises the full (seq_len x vocab_size) logits, "
+            "which keeps peak VRAM low enough for 8 GB cards. The maths is identical to the reference "
+            "implementation. Set to 0 to use the (VRAM hungry) reference implementation."
+        },
+    )
 
     use_ema_teacher: bool = field(
         default=False,
@@ -282,6 +291,7 @@ if __name__ == "__main__":
         ema_decay=script_args.ema_decay,
         student_thinking=script_args.student_thinking,
         teacher_thinking=script_args.teacher_thinking,
+        jsd_chunk_size=script_args.jsd_chunk_size,
     )
 
     if training_args.eval_strategy != "no":
