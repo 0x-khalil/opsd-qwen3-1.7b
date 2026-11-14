@@ -227,7 +227,10 @@ fi
 # --------------------------------------------------------------- 6.5 eval ---
 if [ "$RUN_EVAL" = "1" ]; then
     log ">>> extra: evaluation (AIME24/25 + HMMT25)"
-    EXP_DIR="$RUN_DIR" BASE_MODEL="$MODEL_DIR" bash eval/run_eval_5090.sh 2>&1 | tee -a "$LOG"
+    EXP_DIR="$RUN_DIR" BASE_MODEL="$MODEL_DIR" \
+    EVAL_STEPS="${EVAL_STEPS:-50}" EVAL_BASE="${EVAL_BASE:-1}" \
+    DATASETS="${EVAL_DATASETS:-aime24 aime25 hmmt25}" \
+        bash eval/run_eval_5090.sh 2>&1 | tee -a "$LOG"
 fi
 
 log "=============================================================="

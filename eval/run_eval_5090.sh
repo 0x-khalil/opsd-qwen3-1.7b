@@ -16,6 +16,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 BASE_MODEL="${BASE_MODEL:-$HOME/models/Qwen3-1.7B}"
 EXP_DIR="${EXP_DIR:-$HOME/runs/qwen31b_5090_gen1024_fixteacher}"
 DATASETS="${DATASETS:-aime24 aime25 hmmt25}"
+# which checkpoints to evaluate (all of them is expensive!)
+EVAL_STEPS="${EVAL_STEPS:-50}"
+# 1 = also evaluate the step-0 base model (the reference point)
+EVAL_BASE="${EVAL_BASE:-1}"
 VAL_N="${VAL_N:-12}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-38912}"
@@ -43,12 +47,14 @@ run_eval () {   # $1 = dataset, $2 = extra args (adapter dir or empty)
 }
 
 # 1) base model (step 0 reference)
-for ds in $DATASETS; do
-    run_eval "$ds"
-done
+if [ "$EVAL_BASE" = "1" ]; then
+    for ds in $DATASETS; do
+        run_eval "$ds"
+    done
+fi
 
-# 2) every checkpoint of the run
-for step in 10 20 30 40 50; do
+# 2) the requested checkpoints of the run
+for step in $EVAL_STEPS; do
     ckpt="$EXP_DIR/checkpoint-$step"
     if [ ! -d "$ckpt" ]; then
         echo "skip $ckpt (missing)"
