@@ -19,7 +19,52 @@ import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from evaluate_math import extract_boxed_answer, grade_answer
+from math_verify import parse, verify
+
+try:  # evaluate_math.py imports vllm at module level -> only usable if vLLM is installed
+    from evaluate_math import extract_boxed_answer, grade_answer
+except Exception:  # pragma: no cover - local fallback (no vLLM needed)
+
+    def extract_boxed_answer(text: str):
+        """Extract the content of the last \\boxed{...} in the text."""
+        idx = text.rfind("\\boxed")
+        if idx < 0:
+            return None
+        i = idx
+        depth = 0
+        end = None
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        if end is None:
+            return None
+        boxed = text[idx:end + 1]
+        if boxed.startswith("\\boxed{") and boxed.endswith("}"):
+            return boxed[7:-1].strip()
+        return None
+
+    def grade_answer(predicted: str, ground_truth: str) -> bool:
+        """Grade a boxed answer against the ground truth with math-verify."""
+        if predicted is None:
+            return False
+        try:
+            if "$" not in predicted:
+                predicted = f"${predicted}$"
+            if "$" not in ground_truth:
+                ground_truth = f"${ground_truth}$"
+            return verify(parse(ground_truth, fallback_mode="no_fallback"),
+                          parse(predicted, fallback_mode="no_fallback"),
+                          timeout_seconds=5)
+        except Exception:
+            pn = predicted.replace("$", "").replace(" ", "").lower().strip()
+            gn = ground_truth.replace("$", "").replace(" ", "").lower().strip()
+            return pn == gn
 
 DATASETS = {
     "math500": ("HuggingFaceH4/MATH-500", "test"),

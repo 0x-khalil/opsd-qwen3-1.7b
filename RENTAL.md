@@ -76,7 +76,7 @@ tmux new -s opsd
 inside tmux:
 
 ```bash
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+export HF_TOKEN=<your-token>
 export HF_REPO_ID=your-user/opsd-qwen3-1.7b
 bash scripts/bootstrap_rental.sh 2>&1 | tee -r bootstrap.out
 ```
