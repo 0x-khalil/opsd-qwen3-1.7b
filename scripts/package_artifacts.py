@@ -81,8 +81,11 @@ def main():
         except Exception as e:  # pragma: no cover
             print(f"[package] could not read training_args.bin ({e})")
 
+    base = Path(args.base_model).expanduser()
+    base_str = str(base.resolve()) if base.exists() else args.base_model
+
     cfg = {
-        "base_model": str(Path(args.base_model).resolve()),
+        "base_model": base_str,
         "method": "OPSD (on-policy self-distillation), fixed teacher = step-0 policy via disabled LoRA",
         "model": "Qwen3-1.7B",
         "peft": {"type": "lora", "r": 64, "alpha": 128,
