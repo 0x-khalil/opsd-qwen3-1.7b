@@ -45,6 +45,13 @@ HF_TOKEN="${HF_TOKEN:-}"
 HF_REPO_ID="${HF_REPO_ID:-}"
 HF_REPO_TYPE="${HF_REPO_TYPE:-model}"
 HF_PRIVATE="${HF_PRIVATE:-1}"
+HF_TOKEN_FILE="${HF_TOKEN_FILE:-$HOME/.config/opsd/hf_token}"
+
+# the token can also live in a file (keeps it out of the shell history)
+if [ -z "$HF_TOKEN" ] && [ -f "$HF_TOKEN_FILE" ]; then
+    HF_TOKEN="$(tr -d ' \t\r\n' < "$HF_TOKEN_FILE")"
+    log "using the token from $HF_TOKEN_FILE"
+fi
 
 RUN_EVAL="${RUN_EVAL:-0}"
 UPLOAD_MERGED="${UPLOAD_MERGED:-1}"
