@@ -63,7 +63,12 @@ python ..\fetch_assets.py
 # a checkpoint every 10 steps
 powershell -ExecutionPolicy Bypass -File scripts\run_opsd_1b_3070.ps1
 
-# equivalent explicit call
+# detached launch (survives closing the terminal) - this is what is running now
+powershell -ExecutionPolicy Bypass -File scripts\launch_50steps.ps1 `
+    -RunConfig qwen31b_3070_gen512_fixteacher -MaxSteps 50 -SaveSteps 10 `
+    -MaxCompletion 512 -BatchSize 4 -EffBatch 32 -ChunkSize 32
+
+# equivalent explicit call (paper rollout length)
 powershell -ExecutionPolicy Bypass -File scripts\run_opsd_1b_3070.ps1 `
     -RunConfig qwen31b_3070_gen1024_fixteacher -MaxSteps 50 -SaveSteps 10 `
     -MaxCompletion 1024 -BatchSize 4 -EffBatch 32 -ChunkSize 32
@@ -73,20 +78,30 @@ Knobs: `-MaxCompletion` (rollout length, 1024 in the paper), `-BatchSize` /
 `-EffBatch` (effective batch = `-EffBatch`, 32 in the paper), `-ChunkSize`
 (JSD chunk size, smaller = less VRAM), `-MaxSteps`, `-SaveSteps`, `-ReportTo wandb`.
 
+### The run that is currently going
+
+`MaxCompletion 512` (the paper's 1024 costs ~15 h on this card, 512 costs ~7 h).
+Everything else is identical to `scripts/run_opsd_1b.sh`.
+
+```
+runs\qwen31b_3070_gen512_fixteacher\checkpoint-{10,20,30,40,50}
+runs\opsd_50steps_20261114_171945.log
+```
+
 ### Measured speed on this machine (RTX 3070 Laptop, 8 GB)
 
-Per micro-step (batch 4, 1024-token rollouts) the run splits as:
+Per micro-step (batch 4) the run splits as:
 
-| phase | time |
-| --- | --- |
-| student rollout (`model.generate`, 4 x ~1000 tokens) | **117-139 s** |
-| student backbone forward | 0.8-1.0 s |
-| teacher backbone forward | 1.0-1.4 s |
-| chunked JSD loss | 1.6-2.0 s |
-| peak VRAM (allocated / reserved) | 5.5 / 5.9 GB |
+| phase | 1024-token rollouts | 512-token rollouts |
+| --- | --- | --- |
+| student rollout (`model.generate`, 4 seqs) | 117-139 s | 60-63 s |
+| student backbone forward | 0.8-1.0 s | 0.4 s |
+| teacher backbone forward | 1.0-1.4 s | 0.7 s |
+| chunked JSD loss | 1.6-2.0 s | 1.0 s |
+| peak VRAM (allocated / reserved) | 5.5 / 5.9 GB | 5.0 / 5.2 GB |
 
 So **generation is ~97 % of the step time** - the same thing that vLLM solves on the
-paper's 4xH100 box. HF decoding is kernel-launch bound here (GPU util ~39 %), and the
+paper's 4xH100 box. HF decoding is kernel-launch bound here (GPU util ~35 %), and the
 PEFT wrapper costs another ~40 % (extra LoRA matmuls per layer). Batching is the only
 lever that matters:
 
@@ -97,9 +112,9 @@ lever that matters:
 | 4 | 65.0 tok/s | 38.3 tok/s |
 | 8 | - | 41.6 tok/s |
 
-With `BatchSize 4` + `EffBatch 32` (grad-accum 8) a step takes ~18 min, i.e. **~15 h
-for the 50 steps**. Halve it with `-MaxCompletion 512` (~7.5 h) at the cost of
-truncating the longest rollouts.
+With `BatchSize 4` + `EffBatch 32` (grad-accum 8): **~9 min per optimizer step ->
+~7 h for 50 steps** at 512, ~15 h at the paper's 1024. The first checkpoint lands
+after ~1.5 h.
 
 (Static KV caches would help further but need Triton, which has no Windows wheels.)
 
