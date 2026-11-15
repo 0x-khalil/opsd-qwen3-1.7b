@@ -95,7 +95,7 @@ if not USE_VLLM:
     log("!! vLLM unavailable -> falling back to HF transformers (much slower, reduced scope)")
 
 # ---------------------------------------------------------------- 2. code ---
-if not DRY_RUN and not (REPO_DIR / "eval" / "evaluate_math.py").exists():
+if not DRY_RUN and not SKIP_DOWNLOAD and not (REPO_DIR / "eval" / "evaluate_math.py").exists():
     sh(f"git clone --depth 1 {GITHUB} {REPO_DIR}")
 
 # -------------------------------------------------------------- 3. models ---
