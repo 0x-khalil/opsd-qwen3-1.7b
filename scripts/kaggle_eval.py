@@ -60,11 +60,18 @@ def log(msg):
 
 
 # ------------------------------------------------------------ 1. packages ---
-log("installing packages (vllm, math-verify, huggingface_hub)")
+log("installing packages (vllm, transformers, math-verify, huggingface_hub)")
+# transformers MUST be pinned to 4.57.x: vllm 0.11 calls
+# `tokenizer.all_special_tokens_extended`, which transformers 5.x removed
+# (a fresh Kaggle image would otherwise pull transformers 5.x and every vLLM
+# job dies with "Qwen2Tokenizer has no attribute all_special_tokens_extended").
 sh(
-    'pip install --no-cache-dir -q "vllm==0.11.0" "math-verify==0.8.0" '
-    '"huggingface_hub[cli]" 2>&1 | tail -5'
+    'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
+    '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
 )
+sh("python -c \"import transformers, vllm, tokenizers;"
+   "print('transformers', transformers.__version__, '| vllm', vllm.__version__,"
+   " | tokenizers', tokenizers.__version__)\"")
 USE_VLLM = subprocess.run("python -c 'import vllm;print(vllm.__version__)'",
                            shell=True, capture_output=True).returncode == 0
 log(f"vLLM available: {USE_VLLM}")
@@ -90,6 +97,22 @@ ADAPTERS = {s: MODELS / "pkg" / PKG / f"checkpoint-{s}" for s in CKPT_STEPS}
 for s, p in ADAPTERS.items():
     if not (p / "adapter_model.safetensors").exists():
         log(f"WARNING: checkpoint-{s} not found ({p})")
+
+# ------------------------------------------------------------ 3.5 preflight --
+# Build the tokenizer the way vLLM does -> catches version mismatches in
+# seconds instead of failing 8 jobs in a row.
+if USE_VLLM:
+    pf = subprocess.run(
+        [sys.executable, "-c",
+         "from vllm.transformers_utils.tokenizer import get_tokenizer;"
+         "t=get_tokenizer(%r, trust_remote_code=True);"
+         "print('tokenizer ok:', type(t).__name__)" % str(BASE)],
+        capture_output=True, text=True)
+    log("preflight: " + (pf.stdout.strip() or pf.stderr.strip()[-400:]))
+    if pf.returncode != 0:
+        log("!! the vLLM tokenizer preflight failed -> the jobs would all crash.")
+        log("   falling back to the HF transformers path")
+        USE_VLLM = False
 
 # ------------------------------------------------------------- 4. the jobs ---
 BASE = MODELS / "base"
