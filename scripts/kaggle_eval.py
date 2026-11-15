@@ -103,14 +103,20 @@ if not DRY_RUN and not SKIP_DOWNLOAD:
     from huggingface_hub import snapshot_download  # noqa: E402
 
     # 1) results that are already on the Hub (a previous session may have died
-    #    after uploading them) -> they are restored here and skipped below
+    #    after uploading them) -> they are restored here and skipped below.
+    #    Only the per-eval JSONs are restored; anything else under eval_results/
+    #    (logs, summary.md, junk) is ignored on purpose.
     try:
         snapshot_download(HF_REPO, local_dir=str(WORK / "hub_cache"),
                           allow_patterns=["eval_results/*.json"], max_workers=4)
+        restored = 0
         for j in (WORK / "hub_cache" / "eval_results").glob("*.json"):
+            if j.name in ("summary.json", "summary.md"):
+                continue  # not an eval result
             shutil.copy2(j, RESULTS / j.name)
-        if any(RESULTS.glob("*.json")):
-            log(f"restored {len(list(RESULTS.glob('*.json')))} finished eval(s) from the Hub")
+            restored += 1
+        if restored:
+            log(f"restored {restored} finished eval(s) from the Hub -> they will be skipped")
     except Exception as e:
         log(f"(no previous results on the Hub: {e})")
 
@@ -214,10 +220,15 @@ def write_summary():
     """Build summary.md / summary.json from whatever result files exist."""
     summary = []
     for f in sorted(glob.glob(str(RESULTS / "*.json"))):
+        if os.path.basename(f) == "summary.json":
+            continue  # our own summary, not an eval result
         try:
             d = json.load(open(f, encoding="utf-8"))
         except Exception as e:
             log(f"cannot read {f}: {e}")
+            continue
+        if not isinstance(d, dict):
+            log(f"skipping {f} (not an eval result)")
             continue
         summary.append({
             "file": os.path.basename(f),
