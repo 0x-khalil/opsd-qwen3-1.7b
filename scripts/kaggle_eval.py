@@ -60,64 +60,76 @@ def log(msg):
 
 
 # ------------------------------------------------------------ 1. packages ---
-log("installing packages (vllm, transformers, math-verify, huggingface_hub)")
-# transformers MUST be pinned to 4.57.x: vllm 0.11 calls
-# `tokenizer.all_special_tokens_extended`, which transformers 5.x removed
-# (a fresh Kaggle image would otherwise pull transformers 5.x and every vLLM
-# job dies with "Qwen2Tokenizer has no attribute all_special_tokens_extended").
-sh(
-    'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
-    '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
-)
-sh("python -c \"import transformers, vllm, tokenizers;"
-   "print('transformers', transformers.__version__, '| vllm', vllm.__version__,"
-   " | tokenizers', tokenizers.__version__)\"")
-USE_VLLM = subprocess.run("python -c 'import vllm;print(vllm.__version__)'",
-                           shell=True, capture_output=True).returncode == 0
+DRY_RUN = os.environ.get("DRY_RUN") == "1"
+if not DRY_RUN:
+    log("installing packages (vllm, transformers, math-verify, huggingface_hub)")
+    # transformers MUST be pinned to 4.57.x: vllm 0.11 calls
+    # `tokenizer.all_special_tokens_extended`, which transformers 5.x removed
+    # (a fresh Kaggle image would otherwise pull transformers 5.x and every vLLM
+    # job dies with "Qwen2Tokenizer has no attribute all_special_tokens_extended").
+    sh(
+        'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
+        '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
+    )
+    sh("python -c \"import transformers, vllm, tokenizers;"
+       "print('transformers', transformers.__version__, '| vllm', vllm.__version__,"
+       " | tokenizers', tokenizers.__version__)\"")
+else:
+    log("DRY RUN -> no installs, no downloads")
+
+USE_VLLM = True
+if not DRY_RUN:
+    USE_VLLM = subprocess.run("python -c 'import vllm;print(vllm.__version__)'",
+                               shell=True, capture_output=True).returncode == 0
 log(f"vLLM available: {USE_VLLM}")
 if not USE_VLLM:
     log("!! vLLM unavailable -> falling back to HF transformers (much slower, reduced scope)")
 
 # ---------------------------------------------------------------- 2. code ---
-if not (REPO_DIR / "eval" / "evaluate_math.py").exists():
+if not DRY_RUN and not (REPO_DIR / "eval" / "evaluate_math.py").exists():
     sh(f"git clone --depth 1 {GITHUB} {REPO_DIR}")
 
 # -------------------------------------------------------------- 3. models ---
-from huggingface_hub import snapshot_download  # noqa: E402
+if not DRY_RUN:
+    from huggingface_hub import snapshot_download  # noqa: E402
 
-log("downloading the base model ...")
-snapshot_download(BASE_ID, local_dir=str(MODELS / "base"),
-                  allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"],
-                  max_workers=8)
-log("downloading the OPSD adapters ...")
-snapshot_download(HF_REPO, local_dir=str(MODELS / "pkg"),
-                  allow_patterns=[f"{PKG}/*"], max_workers=8)
+    log("downloading the base model ...")
+    snapshot_download(BASE_ID, local_dir=str(MODELS / "base"),
+                      allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"],
+                      max_workers=8)
+    log("downloading the OPSD adapters ...")
+    snapshot_download(HF_REPO, local_dir=str(MODELS / "pkg"),
+                      allow_patterns=[f"{PKG}/*"], max_workers=8)
 
 ADAPTERS = {s: MODELS / "pkg" / PKG / f"checkpoint-{s}" for s in CKPT_STEPS}
 for s, p in ADAPTERS.items():
     if not (p / "adapter_model.safetensors").exists():
         log(f"WARNING: checkpoint-{s} not found ({p})")
 
+BASE = MODELS / "base"
+
 # ------------------------------------------------------------ 3.5 preflight --
 # Build the tokenizer the way vLLM does -> catches version mismatches in
 # seconds instead of failing 8 jobs in a row.
-if USE_VLLM:
-    pf = subprocess.run(
-        [sys.executable, "-c",
-         "from vllm.transformers_utils.tokenizer import get_tokenizer;"
-         "t=get_tokenizer(%r, trust_remote_code=True);"
-         "print('tokenizer ok:', type(t).__name__)" % str(BASE)],
-        capture_output=True, text=True)
-    log("preflight: " + (pf.stdout.strip() or pf.stderr.strip()[-400:]))
-    if pf.returncode != 0:
-        log("!! the vLLM tokenizer preflight failed -> the jobs would all crash.")
+if USE_VLLM and not DRY_RUN:
+    try:
+        pf = subprocess.run(
+            [sys.executable, "-c",
+             "from vllm.transformers_utils.tokenizer import get_tokenizer;"
+             "t=get_tokenizer(%r, trust_remote_code=True);"
+             "print('tokenizer ok:', type(t).__name__)" % str(BASE)],
+            capture_output=True, text=True)
+        log("preflight: " + (pf.stdout.strip() or pf.stderr.strip()[-400:]))
+        if pf.returncode != 0:
+            log("!! the vLLM tokenizer preflight failed -> the jobs would all crash.")
+            log("   falling back to the HF transformers path")
+            USE_VLLM = False
+    except Exception:
+        log("preflight raised:\n" + traceback.format_exc())
         log("   falling back to the HF transformers path")
         USE_VLLM = False
 
 # ------------------------------------------------------------- 4. the jobs ---
-BASE = MODELS / "base"
-
-
 def vllm_cmd(dataset, adapter, out_json):
     cmd = [
         sys.executable, "eval/evaluate_math.py",
@@ -203,6 +215,16 @@ def worker(gpu, jobs):
 
 log("starting the evaluation workers")
 import threading  # noqa: E402
+
+if DRY_RUN:
+    for gpu, jobs in build_jobs():
+        for dataset, step in jobs:
+            adapter = ADAPTERS.get(step) if step else None
+            out_json = RESULTS / f"{job_name(dataset, step)}.json"
+            cmd = (vllm_cmd if USE_VLLM else hf_cmd)(dataset, adapter, out_json)
+            print(f"GPU{gpu}: " + " ".join(cmd))
+    log("DRY RUN -> nothing was executed")
+    raise SystemExit(0)
 
 threads = []
 try:
