@@ -40,10 +40,10 @@ SKIP_INSTALL = os.environ.get("SKIP_INSTALL") == "1"
 SKIP_DOWNLOAD = os.environ.get("SKIP_DOWNLOAD") == "1"
 SKIP_UPLOAD = os.environ.get("SKIP_UPLOAD") == "1"
 
-DATASETS = ["aime24", "aime25", "hmmt25"]
-CKPT_STEPS = [50, 40, 30, 20, 10]      # priority order
-VAL_N = 12                              # paper: Avg@12
-MAX_NEW_TOKENS = 16384                  # thinking mode (paper uses 38912)
+DATASETS = os.environ.get("EVAL_DATASETS", "aime24 aime25 hmmt25").split()
+CKPT_STEPS = [int(x) for x in os.environ.get("EVAL_STEPS", "50 40 30 20 10").split()]
+VAL_N = int(os.environ.get("EVAL_VAL_N", "12"))          # paper: Avg@12
+MAX_NEW_TOKENS = int(os.environ.get("EVAL_MAX_NEW_TOKENS", "16384"))  # thinking mode (paper: 38912)
 DEADLINE = time.time() + 9 * 3600       # stop starting new jobs after this
 
 os.environ.setdefault("HF_TOKEN", TOKEN)
@@ -269,12 +269,15 @@ def build_jobs():
         # GPU 0: the base model on every dataset   |   GPU 1: step-50 on every dataset
         g0 = [(d, None) for d in DATASETS]
         g1 = [(d, 50) for d in DATASETS]
-        # then the remaining checkpoints on AIME24 (split over both GPUs)
-        g0 += [("aime24", s) for s in (10, 30)]
-        g1 += [("aime24", s) for s in (20, 40)]
+        # then the remaining checkpoints on the first dataset (split over both GPUs)
+        rest = [s for s in CKPT_STEPS if s != 50]
+        first = DATASETS[0] if DATASETS else "aime24"
+        g0 += [(first, s) for s in rest[0::2]]
+        g1 += [(first, s) for s in rest[1::2]]
         return [(0, g0), (1, g1)]
-    # fallback: only aime24, base + step 50, one per GPU
-    return [(0, [("aime24", None)]), (1, [("aime24", 50)])]
+    # fallback: only the first dataset, base + step 50, one per GPU
+    first = DATASETS[0] if DATASETS else "aime24"
+    return [(0, [(first, None)]), (1, [(first, 50)])]
 
 
 def worker(gpu, jobs):
