@@ -42,7 +42,9 @@ MAX_NEW_TOKENS = 16384                  # thinking mode (paper uses 38912)
 DEADLINE = time.time() + 9 * 3600       # stop starting new jobs after this
 
 os.environ.setdefault("HF_TOKEN", TOKEN)
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+# NOTE: do NOT set HF_HUB_ENABLE_HF_TRANSFER here -- with huggingface_hub 0.36 it
+# makes the downloader require the `hf_transfer` package, which is not installed
+# on Kaggle -> ValueError. The default (Xet) downloader is fast enough.
 if not TOKEN:
     print("!! HF_TOKEN is not set -> the upload at the end will fail.")
     print("   set it in the notebook cell: os.environ['HF_TOKEN'] = 'hf_...'")
@@ -71,9 +73,9 @@ if not DRY_RUN:
         'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
         '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
     )
-    sh("python -c \"import transformers, vllm, tokenizers;"
-       "print('transformers', transformers.__version__, '| vllm', vllm.__version__,"
-       " | tokenizers', tokenizers.__version__)\"")
+    sh("python -c \"import transformers,vllm,tokenizers;"
+       "print('transformers',transformers.__version__,'vllm',vllm.__version__,"
+       "'tokenizers',tokenizers.__version__)\"")
 else:
     log("DRY RUN -> no installs, no downloads")
 
