@@ -29,11 +29,16 @@ GITHUB = "https://github.com/0x-khalil/opsd-qwen3-1.7b"  # eval code
 BASE_ID = "Qwen/Qwen3-1.7B"
 PKG = "qwen31b_5090_gen1024_fixteacher_package"
 
-WORK = Path("/kaggle/working/opsd")
+WORK = Path(os.environ.get("OPSD_WORK", "/kaggle/working/opsd"))
 REPO_DIR = WORK / "repo"
 MODELS = WORK / "models"
 RESULTS = WORK / "results"
 LOGS = WORK / "logs"
+
+DRY_RUN = os.environ.get("DRY_RUN") == "1"
+SKIP_INSTALL = os.environ.get("SKIP_INSTALL") == "1"
+SKIP_DOWNLOAD = os.environ.get("SKIP_DOWNLOAD") == "1"
+SKIP_UPLOAD = os.environ.get("SKIP_UPLOAD") == "1"
 
 DATASETS = ["aime24", "aime25", "hmmt25"]
 CKPT_STEPS = [50, 40, 30, 20, 10]      # priority order
@@ -64,18 +69,20 @@ def log(msg):
 # ------------------------------------------------------------ 1. packages ---
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 if not DRY_RUN:
-    log("installing packages (vllm, transformers, math-verify, huggingface_hub)")
+    log("installing packages (vllm, transformers, math-verify, huggingface_hub)"
+        + ("  [skipped]" if SKIP_INSTALL else ""))
     # transformers MUST be pinned to 4.57.x: vllm 0.11 calls
     # `tokenizer.all_special_tokens_extended`, which transformers 5.x removed
     # (a fresh Kaggle image would otherwise pull transformers 5.x and every vLLM
     # job dies with "Qwen2Tokenizer has no attribute all_special_tokens_extended").
-    sh(
-        'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
-        '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
-    )
-    sh("python -c \"import transformers,vllm,tokenizers;"
-       "print('transformers',transformers.__version__,'vllm',vllm.__version__,"
-       "'tokenizers',tokenizers.__version__)\"")
+    if not SKIP_INSTALL:
+        sh(
+            'pip install --no-cache-dir -q "vllm==0.11.0" "transformers==4.57.1" '
+            '"tokenizers>=0.22,<0.23" "huggingface_hub<1.0" "math-verify==0.8.0" 2>&1 | tail -8'
+        )
+        sh("python -c \"import transformers,vllm,tokenizers;"
+           "print('transformers',transformers.__version__,'vllm',vllm.__version__,"
+           "'tokenizers',tokenizers.__version__)\"")
 else:
     log("DRY RUN -> no installs, no downloads")
 
@@ -92,8 +99,20 @@ if not DRY_RUN and not (REPO_DIR / "eval" / "evaluate_math.py").exists():
     sh(f"git clone --depth 1 {GITHUB} {REPO_DIR}")
 
 # -------------------------------------------------------------- 3. models ---
-if not DRY_RUN:
+if not DRY_RUN and not SKIP_DOWNLOAD:
     from huggingface_hub import snapshot_download  # noqa: E402
+
+    # 1) results that are already on the Hub (a previous session may have died
+    #    after uploading them) -> they are restored here and skipped below
+    try:
+        snapshot_download(HF_REPO, local_dir=str(WORK / "hub_cache"),
+                          allow_patterns=["eval_results/*.json"], max_workers=4)
+        for j in (WORK / "hub_cache" / "eval_results").glob("*.json"):
+            shutil.copy2(j, RESULTS / j.name)
+        if any(RESULTS.glob("*.json")):
+            log(f"restored {len(list(RESULTS.glob('*.json')))} finished eval(s) from the Hub")
+    except Exception as e:
+        log(f"(no previous results on the Hub: {e})")
 
     log("downloading the base model ...")
     snapshot_download(BASE_ID, local_dir=str(MODELS / "base"),
@@ -176,6 +195,63 @@ def job_name(dataset, step):
     return f"{dataset}_{'base' if step is None else 'step' + str(step)}"
 
 
+def upload_results():
+    """Push whatever results exist to the Hub (after every single job)."""
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=TOKEN)
+        if any(Path(RESULTS).glob("*.json")):
+            api.upload_folder(folder_path=str(RESULTS), repo_id=HF_REPO, repo_type="model",
+                              path_in_repo="eval_results",
+                              commit_message="OPSD Qwen3-1.7B eval results (Kaggle 2x T4)")
+            log("uploaded the current results to the Hub")
+    except Exception as e:
+        log(f"upload failed (will retry later): {e}")
+
+
+def write_summary():
+    """Build summary.md / summary.json from whatever result files exist."""
+    summary = []
+    for f in sorted(glob.glob(str(RESULTS / "*.json"))):
+        try:
+            d = json.load(open(f, encoding="utf-8"))
+        except Exception as e:
+            log(f"cannot read {f}: {e}")
+            continue
+        summary.append({
+            "file": os.path.basename(f),
+            "dataset": d.get("dataset"),
+            "model": Path(str(d.get("base_model", ""))).name,
+            "adapter": "yes" if "checkpoint" in os.path.basename(f) else "no",
+            "val_n": d.get("val_n"),
+            "avg_at_n": d.get("average_at_n_pct"),
+            "pass_at_n": d.get("pass_at_n_pct"),
+            "majority_at_n": d.get("majority_vote_at_n_pct"),
+            "format_rate": d.get("format_rate"),
+        })
+    if not summary:
+        return []
+    lines = ["| eval | Avg@%s | Pass@%s | Maj@%s | format |" % (VAL_N, VAL_N, VAL_N),
+             "|---|---|---|---|---|"]
+    for s in sorted(summary, key=lambda x: (str(x["dataset"]), str(x["file"]))):
+        lines.append("| {f} | {a} | {p} | {m} | {fr} |".format(
+            f=s["file"].replace(".json", ""),
+            a=("%.2f%%" % s["avg_at_n"]) if s["avg_at_n"] is not None else "-",
+            p=("%.2f%%" % s["pass_at_n"]) if s["pass_at_n"] is not None else "-",
+            m=("%.2f%%" % s["majority_at_n"]) if s["majority_at_n"] is not None else "-",
+            fr=("%.1f%%" % s["format_rate"]) if s["format_rate"] is not None else "-"))
+    (RESULTS / "summary.md").write_text(
+        "# OPSD Qwen3-1.7B evaluation (Kaggle, 2x T4)\n\n"
+        f"Protocol: thinking mode, temperature 1.0, top_p 1.0, top_k off, min_p 0, "
+        f"Avg@{VAL_N}, max_new_tokens {MAX_NEW_TOKENS}, graded with math-verify.\n\n"
+        + "\n".join(lines) + "\n", encoding="utf-8")
+    (RESULTS / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("\n=== SUMMARY ===")
+    print("\n".join(lines), flush=True)
+    return summary
+
+
 def build_jobs():
     """(gpu, [(dataset, step or None), ...]) -> one list of jobs per GPU."""
     if USE_VLLM:
@@ -200,6 +276,11 @@ def worker(gpu, jobs):
             log(f"skip {job_name(dataset, step)}: adapter missing")
             continue
         out_json = RESULTS / f"{job_name(dataset, step)}.json"
+        if out_json.exists() and out_json.stat().st_size > 100:
+            # a Kaggle session reset wipes /kaggle/working -> a result that is already
+            # on disk means this eval is done -> do not redo it
+            log(f"skip {job_name(dataset, step)}: result already present (resume)")
+            continue
         cmd = (vllm_cmd if USE_VLLM else hf_cmd)(dataset, adapter, out_json)
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
@@ -211,8 +292,11 @@ def worker(gpu, jobs):
                                   stderr=subprocess.STDOUT).wait()
         log(f"GPU{gpu} <- {job_name(dataset, step)} finished rc={rc}")
         if rc != 0:
-            log(f"   !! failed, last lines:\n" + "\n".join(
+            log("   !! failed, last lines:\n" + "\n".join(
                 open(logf, encoding="utf-8", errors="replace").readlines()[-15:]))
+        # publish immediately: a session reset must not lose finished evals
+        write_summary()
+        upload_results()
 
 
 log("starting the evaluation workers")
@@ -241,59 +325,27 @@ except Exception:
 log("all evaluation jobs finished")
 
 # --------------------------------------------------------- 5. summarise ---
-summary = []
-for f in sorted(glob.glob(str(RESULTS / "*.json"))):
-    try:
-        d = json.load(open(f, encoding="utf-8"))
-    except Exception as e:
-        log(f"cannot read {f}: {e}")
-        continue
-    summary.append({
-        "file": os.path.basename(f),
-        "dataset": d.get("dataset"),
-        "model": Path(str(d.get("base_model", ""))).name,
-        "adapter": "yes" if d.get("lora") or "checkpoint" in str(f) else "no",
-        "val_n": d.get("val_n"),
-        "avg_at_n": d.get("average_at_n_pct"),
-        "pass_at_n": d.get("pass_at_n_pct"),
-        "majority_at_n": d.get("majority_vote_at_n_pct"),
-        "format_rate": d.get("format_rate"),
-    })
-
-if summary:
-    lines = ["| eval | Avg@%s | Pass@%s | Maj@%s | format |" % (VAL_N, VAL_N, VAL_N),
-             "|---|---|---|---|---|"]
-    for s in sorted(summary, key=lambda x: (str(x["dataset"]), str(x["file"]))):
-        lines.append("| {f} | {a} | {p} | {m} | {fr} |".format(
-            f=s["file"].replace(".json", ""),
-            a=("%.2f%%" % s["avg_at_n"]) if s["avg_at_n"] is not None else "-",
-            p=("%.2f%%" % s["pass_at_n"]) if s["pass_at_n"] is not None else "-",
-            m=("%.2f%%" % s["majority_at_n"]) if s["majority_at_n"] is not None else "-",
-            fr=("%.1f%%" % s["format_rate"]) if s["format_rate"] is not None else "-"))
-    (RESULTS / "summary.md").write_text(
-        "# OPSD Qwen3-1.7B evaluation (Kaggle, 2x T4)\n\n"
-        f"Protocol: thinking mode, temperature 1.0, top_p 1.0, top_k off, min_p 0, "
-        f"Avg@{VAL_N}, max_new_tokens {MAX_NEW_TOKENS}, graded with math-verify.\n\n"
-        + "\n".join(lines) + "\n", encoding="utf-8")
-    (RESULTS / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print("\n=== SUMMARY ===")
-    print("\n".join(lines))
-else:
+summary = write_summary()
+if not summary:
     log("no result files were produced - check the logs in " + str(LOGS))
 
 # ------------------------------------------------------------ 6. upload ---
-try:
-    from huggingface_hub import HfApi
+if SKIP_UPLOAD:
+    log("SKIP_UPLOAD -> not pushing anything")
+else:
+    try:
+        from huggingface_hub import HfApi
 
-    api = HfApi(token=TOKEN)
-    api.upload_folder(folder_path=str(RESULTS), repo_id=HF_REPO, repo_type="model",
-                      path_in_repo="eval_results",
-                      commit_message="OPSD Qwen3-1.7B eval results (Kaggle 2x T4)")
-    if any(Path(LOGS).glob("*.log")):
-        api.upload_folder(folder_path=str(LOGS), repo_id=HF_REPO, repo_type="model",
-                          path_in_repo="eval_results/logs",
-                          commit_message="OPSD Qwen3-1.7B eval logs (Kaggle 2x T4)")
-    log(f"uploaded results -> https://huggingface.co/{HF_REPO}/tree/main/eval_results")
-except Exception as e:
-    log(f"UPLOAD FAILED: {e}")
-    log(f"copy the results manually from {RESULTS}")
+        api = HfApi(token=TOKEN)
+        if any(Path(RESULTS).glob("*.json")):
+            api.upload_folder(folder_path=str(RESULTS), repo_id=HF_REPO, repo_type="model",
+                              path_in_repo="eval_results",
+                              commit_message="OPSD Qwen3-1.7B eval results (Kaggle 2x T4)")
+        if any(Path(LOGS).glob("*.log")):
+            api.upload_folder(folder_path=str(LOGS), repo_id=HF_REPO, repo_type="model",
+                              path_in_repo="eval_results/logs",
+                              commit_message="OPSD Qwen3-1.7B eval logs (Kaggle 2x T4)")
+        log(f"uploaded results -> https://huggingface.co/{HF_REPO}/tree/main/eval_results")
+    except Exception as e:
+        log(f"UPLOAD FAILED: {e}")
+        log(f"copy the results manually from {RESULTS}")
