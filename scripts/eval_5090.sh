@@ -6,10 +6,11 @@
 #  Default evaluation matrix
 #  ------------------------
 #    step-50           -> aime24, aime25, hmmt25      (the final model, all 3 sets)
-#    step-10/20/30/40  -> aime24                     (the checkpoint sweep)
+#    the checkpoint sweep (step-10/20/30/40 on aime24) is OFF  -> set
+#    EVAL_ALL_STEPS="10 20 30 40" to enable it
 #    the base model is NOT evaluated (set EVAL_BASE_DATASETS="aime24 ..." to add it)
 #
-#  = 7 evaluations, ~10-15 min each on a 5090  ->  ~1.5 h  (~$0.8-1.3)
+#  = 3 evaluations, ~10-15 min each on a 5090  ->  ~30-45 min  (~$0.3-0.7)
 #
 #  One command on the rental box:
 #
@@ -40,7 +41,8 @@ PKG="qwen31b_5090_gen1024_fixteacher_package"
 WORK_DIR="${WORK_DIR:-/workspace/opsd}"
 EVAL_MAIN_DATASETS="${EVAL_MAIN_DATASETS:-aime24 aime25 hmmt25}"
 EVAL_MAIN_STEPS="${EVAL_MAIN_STEPS:-50}"
-EVAL_ALL_STEPS="${EVAL_ALL_STEPS:-10 20 30 40}"
+# the checkpoint sweep (step-10/20/30/40 on aime24) is OFF by default
+EVAL_ALL_STEPS="${EVAL_ALL_STEPS:-}"
 # the base model is NOT evaluated by default (set EVAL_BASE_DATASETS="aime24 ..." to add it)
 EVAL_BASE_DATASETS="${EVAL_BASE_DATASETS:-}"
 EVAL_VAL_N="${EVAL_VAL_N:-12}"

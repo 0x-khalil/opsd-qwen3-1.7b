@@ -41,7 +41,7 @@ SKIP_DOWNLOAD = os.environ.get("SKIP_DOWNLOAD") == "1"
 SKIP_UPLOAD = os.environ.get("SKIP_UPLOAD") == "1"
 
 DATASETS = os.environ.get("EVAL_DATASETS", "aime24 aime25 hmmt25").split()
-CKPT_STEPS = [int(x) for x in os.environ.get("EVAL_STEPS", "50 40 30 20 10").split()]
+CKPT_STEPS = [int(x) for x in os.environ.get("EVAL_STEPS", "50").split()]
 # the base model is NOT evaluated by default (EVAL_BASE=1 to add it)
 EVAL_BASE = os.environ.get("EVAL_BASE", "0") == "1"
 # checkpoints that are evaluated on every dataset; the rest only on the first one
