@@ -5,11 +5,11 @@
 #
 #  Default evaluation matrix
 #  ------------------------
-#    base model      -> aime24, aime25, hmmt25      (the reference)
-#    step-50         -> aime24, aime25, hmmt25      (the final model, all 3 sets)
-#    step-10/20/30/40 -> aime24                     (the checkpoint sweep)
+#    step-50           -> aime24, aime25, hmmt25      (the final model, all 3 sets)
+#    step-10/20/30/40  -> aime24                     (the checkpoint sweep)
+#    the base model is NOT evaluated (set EVAL_BASE_DATASETS="aime24 ..." to add it)
 #
-#  = 10 evaluations, ~10-15 min each on a 5090  ->  ~2 h  (~$1-2)
+#  = 7 evaluations, ~10-15 min each on a 5090  ->  ~1.5 h  (~$0.8-1.3)
 #
 #  One command on the rental box:
 #
@@ -41,7 +41,8 @@ WORK_DIR="${WORK_DIR:-/workspace/opsd}"
 EVAL_MAIN_DATASETS="${EVAL_MAIN_DATASETS:-aime24 aime25 hmmt25}"
 EVAL_MAIN_STEPS="${EVAL_MAIN_STEPS:-50}"
 EVAL_ALL_STEPS="${EVAL_ALL_STEPS:-10 20 30 40}"
-EVAL_BASE_DATASETS="${EVAL_BASE_DATASETS:-$EVAL_MAIN_DATASETS}"
+# the base model is NOT evaluated by default (set EVAL_BASE_DATASETS="aime24 ..." to add it)
+EVAL_BASE_DATASETS="${EVAL_BASE_DATASETS:-}"
 EVAL_VAL_N="${EVAL_VAL_N:-12}"
 EVAL_MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-16384}"
 
@@ -188,7 +189,7 @@ PY
 }
 
 # --- the matrix ------------------------------------------------------------
-# 1) base reference on every dataset
+# 1) base reference (off by default)
 for ds in $EVAL_BASE_DATASETS; do run_one "$ds" base; done
 # 2) the final model on every dataset
 for step in $EVAL_MAIN_STEPS; do
