@@ -45,6 +45,8 @@ EVAL_ALL_STEPS="${EVAL_ALL_STEPS:-10 20 30 40}"
 EVAL_BASE_DATASETS="${EVAL_BASE_DATASETS:-}"
 EVAL_VAL_N="${EVAL_VAL_N:-12}"
 EVAL_MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-16384}"
+# fraction of the GPU vLLM may use -- lower it if another tenant/pod shares the GPU
+EVAL_GPU_MEM="${EVAL_GPU_MEM:-0.8}"
 
 MODEL_DIR="$WORK_DIR/models/Qwen3-1.7B"
 ADAPTER_DIR="$WORK_DIR/models/pkg/$PKG"
@@ -155,7 +157,7 @@ run_one() {   # $1 = dataset, $2 = checkpoint step ("base" for the base model)
                 --val_n "$EVAL_VAL_N" --temperature 1.0 --top_p 1.0 --top_k -1
                 --min_p 0.0 --presence_penalty 0.0
                 --max_new_tokens "$EVAL_MAX_NEW_TOKENS" --tensor_parallel_size 1
-                --gpu_memory_utilization 0.80 --enable_thinking --output_file "$out")
+                --gpu_memory_utilization "$EVAL_GPU_MEM" --enable_thinking --output_file "$out")
     if [ "$step" != "base" ]; then
         if [ "$DRY_RUN" != "1" ] && [ ! -f "$ADAPTER_DIR/checkpoint-$step/adapter_model.safetensors" ]; then
             log "skip $tag (checkpoint-$step not found)"
