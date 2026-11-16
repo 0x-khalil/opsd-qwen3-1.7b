@@ -56,6 +56,13 @@ RESULTS="$WORK_DIR/eval_results"
 LOGS="$WORK_DIR/eval_logs"
 VENV="$WORK_DIR/venv"
 
+# the HF token can live in a file (survives new SSH sessions / a detached job)
+HF_TOKEN_FILE="${HF_TOKEN_FILE:-$HOME/.config/opsd/hf_token}"
+if [ -z "${HF_TOKEN:-}" ] && [ -s "$HF_TOKEN_FILE" ]; then
+    HF_TOKEN="$(tr -d ' \t\r\n' < "$HF_TOKEN_FILE")"
+    export HF_TOKEN
+fi
+
 mkdir -p "$WORK_DIR" "$RESULTS" "$LOGS"
 export WORK_DIR HF_REPO RESULTS
 log() { echo "[$(date +%H:%M:%S)] $*"; }
