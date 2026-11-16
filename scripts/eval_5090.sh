@@ -47,6 +47,14 @@ EVAL_ALL_STEPS="${EVAL_ALL_STEPS:-}"
 EVAL_BASE_DATASETS="${EVAL_BASE_DATASETS:-}"
 EVAL_VAL_N="${EVAL_VAL_N:-12}"
 EVAL_MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-16384}"
+# EVAL_NO_THINKING=1 -> the model answers directly (no long CoT):
+#   * no truncation -> the format rate goes to ~100 %
+#   * ~5 min per eval instead of ~50
+#   * directly comparable with the paper's NON-THINKING table
+EVAL_NO_THINKING="${EVAL_NO_THINKING:-0}"
+if [ "$EVAL_NO_THINKING" = "1" ] && [ "$EVAL_MAX_NEW_TOKENS" = "16384" ]; then
+    EVAL_MAX_NEW_TOKENS=4096
+fi
 # fraction of the GPU vLLM may use -- lower it if another tenant/pod shares the GPU
 EVAL_GPU_MEM="${EVAL_GPU_MEM:-0.8}"
 
@@ -166,13 +174,22 @@ run_one() {   # $1 = dataset, $2 = checkpoint step ("base" for the base model)
                 --val_n "$EVAL_VAL_N" --temperature 1.0 --top_p 1.0 --top_k -1
                 --min_p 0.0 --presence_penalty 0.0
                 --max_new_tokens "$EVAL_MAX_NEW_TOKENS" --tensor_parallel_size 1
-                --gpu_memory_utilization "$EVAL_GPU_MEM" --enable_thinking --output_file "$out")
+                --gpu_memory_utilization "$EVAL_GPU_MEM" --output_file "$out")
+    if [ "$EVAL_NO_THINKING" != "1" ]; then
+        args+=(--enable_thinking)
+    fi
+    if [ "$EVAL_NO_THINKING" = "1" ]; then
+        args+=(--no_thinking)
+    fi
     if [ "$step" != "base" ]; then
         if [ "$DRY_RUN" != "1" ] && [ ! -f "$ADAPTER_DIR/checkpoint-$step/adapter_model.safetensors" ]; then
             log "skip $tag (checkpoint-$step not found)"
             return 0
         fi
         args+=(--checkpoint_dir "$ADAPTER_DIR/checkpoint-$step")
+    fi
+    if [ "$EVAL_NO_THINKING" = "1" ]; then
+        args+=(--no_thinking)
     fi
 
     log "=== $tag  (val_n=$EVAL_VAL_N, max_new_tokens=$EVAL_MAX_NEW_TOKENS) ==="
