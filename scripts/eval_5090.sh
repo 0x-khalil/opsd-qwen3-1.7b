@@ -181,15 +181,15 @@ run_one() {   # $1 = dataset, $2 = checkpoint step ("base" for the base model)
     if [ "$EVAL_NO_THINKING" = "1" ]; then
         args+=(--no_thinking)
     fi
+    if [ "$EVAL_NO_THINKING" = "1" ]; then
+        args+=(--no_thinking)
+    fi
     if [ "$step" != "base" ]; then
         if [ "$DRY_RUN" != "1" ] && [ ! -f "$ADAPTER_DIR/checkpoint-$step/adapter_model.safetensors" ]; then
             log "skip $tag (checkpoint-$step not found)"
             return 0
         fi
         args+=(--checkpoint_dir "$ADAPTER_DIR/checkpoint-$step")
-    fi
-    if [ "$EVAL_NO_THINKING" = "1" ]; then
-        args+=(--no_thinking)
     fi
 
     log "=== $tag  (val_n=$EVAL_VAL_N, max_new_tokens=$EVAL_MAX_NEW_TOKENS) ==="
