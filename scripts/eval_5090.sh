@@ -77,15 +77,25 @@ if [ "$DRY_RUN" != "1" ]; then
     fi
     # shellcheck disable=SC1091
     source "$VENV/bin/activate"
-    if ! python -c "import vllm" >/dev/null 2>&1; then
-        log "installing torch cu128 + vllm 0.11 + transformers 4.57.1 (a few minutes)"
+
+    # check EVERY module the eval needs (a venv left over from the training run
+    # already has vllm but no `datasets` -> that is how the first attempt failed)
+    need_install=0
+    for mod in vllm transformers datasets math_verify; do
+        if ! python -c "import $mod" >/dev/null 2>&1; then
+            log "missing python module: $mod"
+            need_install=1
+        fi
+    done
+    if [ $need_install = 1 ]; then
+        log "installing torch cu128 + vllm 0.11 + transformers 4.57.1 + datasets (a few minutes)"
         pip install -q --upgrade pip wheel
         pip install -q "torch==2.8.0" --index-url https://download.pytorch.org/whl/cu128 \
             --extra-index-url https://pypi.org/simple
         pip install -q "vllm==0.11.0" "transformers==4.57.1" "tokenizers>=0.22,<0.23" \
-            "huggingface_hub<1.0" "math-verify==0.8.0"
+            "huggingface_hub<1.0" "math-verify==0.8.0" "datasets==3.6.0"
     fi
-    python -c "import torch,vllm,transformers;print('torch',torch.__version__,'| vllm',vllm.__version__,'| transformers',transformers.__version__,'| cuda',torch.version.cuda)"
+    python -c "import torch,vllm,transformers,datasets,math_verify;print('torch',torch.__version__,'| vllm',vllm.__version__,'| transformers',transformers.__version__,'| datasets',datasets.__version__,'| cuda',torch.version.cuda)"
 fi
 
 # ---------------------------------------------------------------- 2. code ---
